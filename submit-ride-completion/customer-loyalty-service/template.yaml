@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM Template for the Customer Loyalty Service.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Name of the overall workload this service belongs to"
+    Default: "submit-ride-completion"
+  Service:
+    Type: "String"
+    Description: "Name of this service"
+    Default: "customer-loyalty-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  # Shared parameters via AWS SSM Parameter Store.
+  RideCompletionTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SNS topic for ride completion notifications"
+    Default: "/dev/src/sns/ride-completion-topic/arn"
+  RideCompletionTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SNS topic for ride completion notifications"
+    Default: "/dev/src/sns/ride-completion-topic/name"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Tags:   
+      Stage:    !Ref "Stage"
+      Workload: !Ref "Workload"
+      Service:  !Ref "Service"
+    Environment:
+      Variables:
+        STAGE:     !Ref "Stage"
+        WORKLOAD:  !Ref "Workload"
+        SERVICE:   !Ref "Service"
+        LOG_LEVEL: !Ref "LogLevel"
+
+        RIDES_STORE_TABLE_NAME: !Ref "RidesStoreTable"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # Persistence resources.
+
+  RidesStoreTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub "${Stage}-${Workload}-${Service}-RidesStoreTable"
+      AttributeDefinitions: 
+        - AttributeName: "customer-id"
+          AttributeType: "S"
+        - AttributeName: "submitted-at"
+          AttributeType: "S"
+      KeySchema: 
+        - AttributeName: "customer-id"
+          KeyType: "HASH"
+        - AttributeName: "submitted-at"
+          KeyType: "RANGE"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      Tags:
+        - Key: "Stage"
+          Value: !Sub "${Stage}"
+        - Key: "Workload"
+          Value: !Sub "${Workload}"
+        - Key: "Service"
+          Value: !Sub "${Service}"
+
+  # Processing resources.
+
+  RideCompletionNotificationProcessingFunction:
+    Depends: "RidesStoreTable"
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: "src/processing/"
+      Handler: "ride_completion_notification_processing.lambda_handler"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref "RidesStoreTable"
+      Events:
+        RideCompletionNotificationEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref "RideCompletionTopicArn"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Outputs:
+
+  # Outputs for RidesStore.
+  
+  RidesStoreTableName:
+    Description: "Name of the rides store table"
+    Value: !Ref "RidesStoreTable"
+  RidesStoreTableArn:
+    Description: "ARN of the rides store table"
+    Value: !GetAtt "RidesStoreTable.Arn"
+
+  # Outputs for Lambda functions.
+  
+  RideCompletionNotificationProcessingFunctionArn:
+    Description: "ARN of the RideCompletionNotificationProcessingFunction"
+    Value: !GetAtt "RideCompletionNotificationProcessingFunction.Arn"
+  RideCompletionNotificationProcessingFunctionRoleArn:
+    Description: "ARN of the IAM role implicitly created for the RideCompletionNotificationProcessingFunction"
+    Value: !GetAtt "RideCompletionNotificationProcessingFunctionRole.Arn"
+
+# ---------------------------------------------------------------------------------------------------------------------

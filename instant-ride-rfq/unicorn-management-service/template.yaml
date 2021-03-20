@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM Template for the Unicorn Management Service.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Name of the overall workload this service belongs to"
+    Default: "icp-reqres"
+  Service:
+    Type: "String"
+    Description: "Name of this service"
+    Default: "responder"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  # Shared parameters via AWS SSM Parameter Store.
+  RfqRequestTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SNS topic for RFQ requests"
+    Default: "/dev/irr/sns/rfq-request-topic/arn"
+  RfqRequestTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SNS topic for RFQ requests"
+    Default: "/dev/irr/sns/rfq-request-topic/name"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Tags:   
+      Stage: !Ref "Stage"
+      Workload: !Ref "Workload"
+      Service: !Ref "Service"
+    Environment:
+      Variables:
+        STAGE:     !Ref "Stage"
+        WORKLOAD:  !Ref "Workload"
+        SERVICE:   !Ref "Service"
+        LOG_LEVEL: !Ref "LogLevel"
+
+        MSG_META_CORRELATION_ID_KEY: "icp.correlation-id"
+        MSG_META_RETURN_ADDRESS_KEY: "icp.return-address"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # Processing resources.
+
+  ProcessRfqRequestShadowfaxFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: "src/processing/"
+      Handler: "process_rfq_request.lambda_handler"
+      Environment:
+        Variables:
+          UNICORN_ID: "Shadowfax"
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !Sub "${Stage}-${Workload}-*"
+      Events:
+        RideCompletionNotificationEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref "RfqRequestTopicArn"
+
+  ProcessRfqRequestRocinanteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: "src/processing/"
+      Handler: "process_rfq_request.lambda_handler"
+      Environment:
+        Variables:
+          UNICORN_ID: "Rocinante"
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !Sub "${Stage}-${Workload}-*"
+      Events:
+        RideCompletionNotificationEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref "RfqRequestTopicArn"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Outputs:
+
+  # Outputs for Lambda functions.
+  
+  ProcessRfqRequestShadowfaxFunctionArn:
+    Description: "ARN of the ProcessRfqRequestShadowfaxFunction"
+    Value: !GetAtt "ProcessRfqRequestShadowfaxFunction.Arn"
+  ProcessRfqRequestShadowfaxFunctionRoleArn:
+    Description: "ARN of the IAM role implicitly created for the ProcessRfqRequestShadowfaxFunction"
+    Value: !GetAtt "ProcessRfqRequestShadowfaxFunction.Arn"
+
+  ProcessRfqRequestRocinanteFunctionArn:
+    Description: "ARN of the ProcessRfqRequestRocinanteFunction"
+    Value: !GetAtt "ProcessRfqRequestRocinanteFunction.Arn"
+  ProcessRfqRequestRocinanteFunctionRoleArn:
+    Description: "ARN of the IAM role implicitly created for the ProcessRfqRequestRocinanteFunction"
+    Value: !GetAtt "ProcessRfqRequestRocinanteFunction.Arn"
+
+# ---------------------------------------------------------------------------------------------------------------------

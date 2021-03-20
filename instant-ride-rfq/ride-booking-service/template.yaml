@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM Template for the Ride Booking Service.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Name of the overall workload this service belongs to"
+    Default: "instant-ride-rfq"
+  Service:
+    Type: "String"
+    Description: "Name of this service"
+    Default: "ride-booking-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Tags:   
+      Stage:    !Ref "Stage"
+      Workload: !Ref "Workload"
+      Service:  !Ref "Service"
+    Environment:
+      Variables:
+        STAGE:     !Ref "Stage"
+        WORKLOAD:  !Ref "Workload"
+        SERVICE:   !Ref "Service"
+        LOG_LEVEL: !Ref "LogLevel"
+
+        MSG_META_CORRELATION_ID_KEY: "icp.correlation-id"
+        MSG_META_RETURN_ADDRESS_KEY: "icp.return-address"
+
+        RFQ_REQUEST_TABLE_NAME: !Ref "RfqRequestTable"
+        RFQ_REQUEST_TOPIC_NAME: !GetAtt "RfqRequestTopic.TopicName"
+        RFQ_REQUEST_TOPIC_ARN:  !Ref "RfqRequestTopic"
+
+        RFQ_RESPONSE_TABLE_NAME: !Ref "RfqResponseTable"
+        RFQ_RESPONSE_QUEUE_NAME: !GetAtt "RfqResponseQueue.QueueName"
+        RFQ_RESPONSE_QUEUE_URL:  !Ref "RfqResponseQueue"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # Persistence resources.
+
+  RfqRequestTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub "${Stage}-${Workload}-${Service}-RfqRequestTable"
+      AttributeDefinitions:
+        - AttributeName: "customer-id"
+          AttributeType: "S"
+        - AttributeName: "correlation-id"
+          AttributeType: "S"
+      KeySchema: 
+        - AttributeName: "customer-id"
+          KeyType: "HASH"
+        - AttributeName: "correlation-id"
+          KeyType: "RANGE"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      Tags:
+        - Key: "Stage"
+          Value: !Sub "${Stage}"
+        - Key: "Workload"
+          Value: !Sub "${Workload}"
+        - Key: "Service"
+          Value: !Sub "${Service}"
+
+  RfqResponseTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub "${Stage}-${Workload}-${Service}-RfqResponseTable"
+      AttributeDefinitions:
+        - AttributeName: "correlation-id"
+          AttributeType: "S"
+        - AttributeName: "unicorn-id"
+          AttributeType: "S"
+      KeySchema: 
+        - AttributeName: "correlation-id"
+          KeyType: "HASH"
+        - AttributeName: "unicorn-id"
+          KeyType: "RANGE"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      Tags:
+        - Key: "Stage"
+          Value: !Sub "${Stage}"
+        - Key: "Workload"
+          Value: !Sub "${Workload}"
+        - Key: "Service"
+          Value: !Sub "${Service}"
+
+  # Messaging resources.
+
+  RfqRequestTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Stage}-${Workload}-RfqRequestTopic"
+      Tags:
+        - Key: "Stage"
+          Value: !Sub "${Stage}"
+        - Key: "Workload"
+          Value: !Sub "${Workload}"
+        - Key: "Service"
+          Value: !Sub "${Service}"
+
+  RfqResponseQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Stage}-${Workload}-RfqResponseQueue"
+      Tags:
+        - Key: "Stage"
+          Value: !Sub "${Stage}"
+        - Key: "Workload"
+          Value: !Sub "${Workload}"
+        - Key: "Service"
+          Value: !Sub "${Service}"
+
+  # User API resources.
+
+  SubmitRfqFunction:
+    Depends: [ "RfqRequestTable", "RfqRequestTopic" ]
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: "src/api/user/"
+      Handler: "submit_rfq.lambda_handler"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref "RfqRequestTable"
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt "RfqRequestTopic.TopicName"
+      Events:
+        SubmitRequestEvent:
+          Type: Api
+          Properties:
+            Path: "/api/user/submit-rfq"
+            Method: post
+
+  RetrieveRfqStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: "src/api/user/"
+      Handler: "retrieve_rfq_status.lambda_handler"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqRequestTable"
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqResponseTable"
+      Events:
+        SubmitRequestEvent:
+          Type: Api
+          Properties:
+            Path: "/api/user/retrieve-rfq-status"
+            Method: get
+
+  ProcessRfqResponseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: "src/processing/"
+      Handler: "process_rfq_response.lambda_handler"
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt "RfqResponseQueue.QueueName"
+        - DynamoDBCrudPolicy:
+            TableName: !Ref "RfqResponseTable"
+      Events:
+        RfqResponseMessageEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt "RfqResponseQueue.Arn"
+            BatchSize: 10
+
+  RetrieveRfqResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: "src/api/user/"
+      Handler: "retrieve_rfq_result.lambda_handler"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqRequestTable"
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqResponseTable"
+      Events:
+        SubmitRequestEvent:
+          Type: Api
+          Properties:
+            Path: "/api/user/retrieve-rfq-result"
+            Method: get
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # SSM Parameters for shared resources in this workload.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  # Parameters for RfqRequestTopic.
+
+  SSMParameter4RfqRequestTopicArn:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/rfq-request-topic/arn"
+      Description: "ARN of the shared SNS topic for RFQ request notifications"
+      Value: !Ref "RfqRequestTopic"
+      Tags:
+        Stage:    !Ref "Stage"
+        Workload: !Ref "Workload"
+        Service:  !Ref "Service"
+
+  SSMParameter4RfqRequestTopicName:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/rfq-request-topic/name"
+      Description: "Name of the shared SNS topic for RFQ request notifications"
+      Value: !GetAtt "RfqRequestTopic.TopicName"
+      Tags:
+        Stage:    !Ref "Stage"
+        Workload: !Ref "Workload"
+        Service:  !Ref "Service"
+
+  # Parameters for RfqResponseQueue.
+  
+  SSMParameter4RfqResponseQueueUrl:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sqs/rfq-response-queue/url"
+      Description: "URL of the shared SQS queue for RFQ responses"
+      Value: !Ref "RfqResponseQueue"
+      Tags:
+        Stage:    !Ref "Stage"
+        Workload: !Ref "Workload"
+        Service:  !Ref "Service"
+
+  SSMParameter4RfqResponseQueueArn:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sqs/rfq-response-queue/arn"
+      Description: "ARN of the shared SQS queue for RFQ responses"
+      Value: !GetAtt "RfqResponseQueue.Arn"
+      Tags:
+        Stage:    !Ref "Stage"
+        Workload: !Ref "Workload"
+        Service:  !Ref "Service"
+
+  SSMParameter4RfqResponseQueueName:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sqs/rfq-response-queue/name"
+      Description: "ARN of the shared SQS queue for RFQ responses"
+      Value: !GetAtt "RfqResponseQueue.QueueName"
+      Tags:
+        Stage:    !Ref "Stage"
+        Workload: !Ref "Workload"
+        Service:  !Ref "Service"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Outputs:
+
+  # Outputs for DynamoDB tables.
+  
+  RfqRequestTableName:
+    Description: "Name of the RfqRequestTable"
+    Value: !Ref "RfqRequestTable"
+  RfqRequestTableArn:
+    Description: "ARN of the RfqRequestTable"
+    Value: !GetAtt "RfqRequestTable.Arn"
+
+  RfqResponseTableName:
+    Description: "Name of the RfqResponseTable"
+    Value: !Ref "RfqResponseTable"
+  RfqResponseTableArn:
+    Description: "ARN of the RfqResponseTable"
+    Value: !GetAtt "RfqResponseTable.Arn"
+
+  # Outputs for RfqRequestTopic.
+  
+  RfqRequestTopicArn:
+    Description: "ARN of the RFQ request topic"
+    Value: !Ref "RfqRequestTopic"
+  RfqRequestTopicName:
+    Description: "Name of the RFQ request topic"
+    Value: !GetAtt "RfqRequestTopic.TopicName"
+
+  # Outputs for RfqResponseQueue.
+
+  RfqResponseQueueUrl:
+    Value: !Ref "RfqResponseQueue"
+    Description: "URL of the SQS queue for RFQ responses"
+  RfqResponseQueueArn:
+    Value: !GetAtt "RfqResponseQueue.Arn"
+    Description: "ARN of the SQS queue for RFQ responses"
+  RfqResponseQueueName:
+    Value: !GetAtt "RfqResponseQueue.QueueName"
+    Description: "Name of the SQS queue for RFQ responses"
+
+  # Outputs for Lambda functions.
+  # --> skipped.
+
+  # Outputs for APIs.
+  RideBookingApiBaseUrl:
+    Description: "API Gateway base URL for the API resources of this service"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+
+# ---------------------------------------------------------------------------------------------------------------------
