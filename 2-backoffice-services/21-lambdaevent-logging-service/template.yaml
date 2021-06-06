@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Wild Rydes Backends / Backoffice Services / Lambda-Event Logging Service.
+  This service receives Lambda events from Business Services via SNS topics and writes them to CloudWatch Logs.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Short name of the overall workload this service belongs to"
+    Default: "wrbs"
+  Context:
+    Type: "String"
+    Description: "Short name of the context for this service (e.g. backoffice services versus businss services)"
+    Default: "boff"
+  Service:
+    Type: "String"
+    Description: "Short name of this service"
+    Default: "lelo"
+  WorkloadLongName:
+    Type: "String"
+    Description: "Long name of the overall workload this service belongs to"
+    Default: "wild-rydes-backends"
+  ContextLongName:
+    Type: "String"
+    Description: "Long name of the context for this service (e.g. backoffice services versus businss services)"
+    Default: "backoffice-services"
+  ServiceLongName:
+    Type: "String"
+    Description: "Long name of this service"
+    Default: "lambdaevent-logging-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Type: "Number"
+    Description: "CloudWatch Logs retention period"
+    Default: 7
+
+  # Parameters from AWS SSM Parameter Store for shared resources.
+
+  ApigwRequestEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/arn"
+  ApigwRequestEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/name"
+
+  SnsMessageEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/arn"
+  SnsMessageEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/name"
+
+  SqsMessageEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SqsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sqs-message-events/arn"
+  SqsMessageEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SqsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sqs-message-events/name"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+
+  # Globals for serverless functions.
+
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Tags:   
+      Stage:            !Ref "Stage"
+      Workload:         !Ref "Workload"
+      Context:          !Ref "Context"
+      Service:          !Ref "Service"
+      WorkloadLongName: !Ref "WorkloadLongName"
+      ContextLongName:  !Ref "ContextLongName"
+      ServiceLongName:  !Ref "ServiceLongName"
+    Environment:
+      Variables:
+        STAGE:              !Ref "Stage"
+        WORKLOAD:           !Ref "Workload"
+        CONTEXT:            !Ref "Context"
+        SERVICE:            !Ref "Service"
+        WORKLOAD_LONG_NAME: !Ref "WorkloadLongName"
+        CONTEXT_LONG_NAME:  !Ref "ContextLongName"
+        SERVICE_LONG_NAME:  !Ref "ServiceLongName"
+        LOG_LEVEL:          !Ref "LogLevel"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Lambda function + log group for processing API GW request events.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  ApigwRequestEventProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-ApigwRequestEventProcessingFunction"
+      CodeUri: "src/"
+      Handler: "process_lambdaevent_logging.lambda_handler"
+      Events:
+        ApigwRequestEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref "ApigwRequestEventTopicArn"
+
+  ApigwRequestEventProcessingFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApigwRequestEventProcessingFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Lambda function + log group for processing SNS message events.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  SnsMessageEventProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-SnsMessageEventProcessingFunction"
+      CodeUri: "src/"
+      Handler: "process_lambdaevent_logging.lambda_handler"
+      Events:
+        SnsMessageEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref "SnsMessageEventTopicArn"
+
+  SnsMessageEventProcessingFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SnsMessageEventProcessingFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Lambda function + log group for processing SQS message events.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  SqsMessageEventProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-SqsMessageEventProcessingFunction"
+      CodeUri: "src/"
+      Handler: "process_lambdaevent_logging.lambda_handler"
+      Events:
+        SqsMessageEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref "SqsMessageEventTopicArn"
+
+  SqsMessageEventProcessingFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SqsMessageEventProcessingFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Outputs:
+
+  # Outputs for Lambda functions.
+
+  ApigwRequestEventProcessingFunctionName:
+    Description: "Name of the ApigwRequestEventProcessingFunction"
+    Value: !Ref "ApigwRequestEventProcessingFunction"
+  ApigwRequestEventProcessingFunctionArn:
+    Description: "ARN of the ApigwRequestEventProcessingFunction"
+    Value: !GetAtt "ApigwRequestEventProcessingFunction.Arn"
+
+  SnsMessageEventProcessingFunctionName:
+    Description: "Name of the SnsMessageEventProcessingFunction"
+    Value: !Ref "SnsMessageEventProcessingFunction"
+  SnsMessageEventProcessingFunctionArn:
+    Description: "ARN of the SnsMessageEventProcessingFunction"
+    Value: !GetAtt "SnsMessageEventProcessingFunction.Arn"
+
+  SqsMessageEventProcessingFunctionName:
+    Description: "Name of the SqsMessageEventProcessingFunction"
+    Value: !Ref "SqsMessageEventProcessingFunction"
+  SqsMessageEventProcessingFunctionArn:
+    Description: "ARN of the SqsMessageEventProcessingFunction"
+    Value: !GetAtt "SqsMessageEventProcessingFunction.Arn"
+
+  # Outputs for log groups.
+
+  ApigwRequestEventProcessingFunctionLogGroupName:
+    Description: "Name of the ApigwRequestEventProcessingFunctionLogGroup"
+    Value: !Ref "ApigwRequestEventProcessingFunctionLogGroup"
+  ApigwRequestEventProcessingFunctionLogGroupArn:
+    Description: "ARN of the ApigwRequestEventProcessingFunctionLogGroup"
+    Value: !GetAtt "ApigwRequestEventProcessingFunctionLogGroup.Arn"
+
+  SnsMessageEventProcessingFunctionLogGroupName:
+    Description: "Name of the SnsMessageEventProcessingFunctionLogGroup"
+    Value: !Ref "SnsMessageEventProcessingFunctionLogGroup"
+  SnsMessageEventProcessingFunctionLogGroupArn:
+    Description: "ARN of the SnsMessageEventProcessingFunctionLogGroup"
+    Value: !GetAtt "SnsMessageEventProcessingFunctionLogGroup.Arn"
+
+  SqsMessageEventProcessingFunctionLogGroupName:
+    Description: "Name of the SqsMessageEventProcessingFunctionLogGroup"
+    Value: !Ref "SqsMessageEventProcessingFunctionLogGroup"
+  SqsMessageEventProcessingFunctionLogGroupArn:
+    Description: "ARN of the SqsMessageEventProcessingFunctionLogGroup"
+    Value: !GetAtt "SqsMessageEventProcessingFunctionLogGroup.Arn"
+
+# ---------------------------------------------------------------------------------------------------------------------

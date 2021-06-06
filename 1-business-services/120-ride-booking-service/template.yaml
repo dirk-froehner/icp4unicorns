@@ -1,0 +1,474 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Wild Rydes Backends / Business Services / Ride Booking Service.
+  This service allows passengers to book rides in advance and even run RFQs for selecting best personal offers.
+  Under development.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Short name of the overall workload this service belongs to"
+    Default: "wrbs"
+  Context:
+    Type: "String"
+    Description: "Short name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "busi"
+  Service:
+    Type: "String"
+    Description: "Short name of this service"
+    Default: "ribo"
+  WorkloadLongName:
+    Type: "String"
+    Description: "Long name of the overall workload this service belongs to"
+    Default: "wild-rydes-backends"
+  ContextLongName:
+    Type: "String"
+    Description: "Long name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "business-services"
+  ServiceLongName:
+    Type: "String"
+    Description: "Long name of this service"
+    Default: "ride-booking-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Type: "Number"
+    Description: "CloudWatch Logs retention period"
+    Default: 7
+
+  # Standard parameters for business services.
+
+  PublishLambdaEvents:
+    Type: "Number"
+    Description: "Flag to state if Lambda events from business services must be pulished to the respective ops topic"
+    Default: 1
+
+  ApigwRequestEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/arn"
+  ApigwRequestEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/name"
+
+  # Parameters specific to this service.
+
+  RfqRequestTableName:
+    Description: "Name suffix for the table that stores outgoing RFQ requests"
+    Type: "String"
+    Default: "rfq-requests"
+
+  RfqResponseTableName:
+    Description: "Name suffix for the table that stores incoming RFQ responses"
+    Type: "String"
+    Default: "rfq-responses"
+
+  RfqRequestTopicName:
+    Description: "Name suffix for the topic that published RFQ requests"
+    Type: "String"
+    Default: "rfq-requests"
+
+  RfqResponseQueueName:
+    Description: "Name suffix for the queue that receives RFQ responses"
+    Type: "String"
+    Default: "rfq-responses"
+
+  SubmitRfqFunctionName:
+    Description: "Name suffix for the function that accepts RFQs from passengers"
+    Type: "String"
+    Default: "submit-rfq"
+
+  RetrieveRfqStatusFunctionName:
+    Description: "Name suffix for the function to retrieve the status of a running RFQ"
+    Type: "String"
+    Default: "retrieve-rfq-status"
+
+  RetrieveRfqResultFunctionName:
+    Description: "Name suffix for the function to retrieve the result of an RFQ"
+    Type: "String"
+    Default: "retrieve-rfq-result"
+
+  ProcessRfqResponseFunctionName:
+    Description: "Name suffix for the function to process incoming RFQ responses"
+    Type: "String"
+    Default: "process-rfq-response"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+
+  # Globals for serverless functions.
+
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Environment:
+      Variables:
+        STAGE:                 !Ref "Stage"
+        WORKLOAD:              !Ref "Workload"
+        CONTEXT:               !Ref "Context"
+        SERVICE:               !Ref "Service"
+        WORKLOAD_LONG_NAME:    !Ref "WorkloadLongName"
+        CONTEXT_LONG_NAME:     !Ref "ContextLongName"
+        SERVICE_LONG_NAME:     !Ref "ServiceLongName"
+        LOG_LEVEL:             !Ref "LogLevel"
+        PUBLISH_LAMBDA_EVENTS: !Ref "PublishLambdaEvents"
+        MSG_META_CORRELATION_ID_KEY: "icp.correlation-id"
+        MSG_META_RETURN_ADDRESS_KEY: "icp.return-address"
+    # Tags provided externally by sam deploy command.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Persistence resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  RfqRequestTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub "${Stage}-${Workload}-${Service}-${RfqRequestTableName}"
+      AttributeDefinitions: 
+        - {AttributeName: "customer-id",    AttributeType: "S"}
+        - {AttributeName: "correlation-id", AttributeType: "S"}
+      KeySchema: 
+        - {AttributeName: "customer-id",    KeyType: "HASH" }
+        - {AttributeName: "correlation-id", KeyType: "RANGE"}
+      ProvisionedThroughput: {ReadCapacityUnits: 5,  WriteCapacityUnits: 5}
+    # Tags provided externally by sam deploy command.
+
+  RfqResponseTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub "${Stage}-${Workload}-${Service}-${RfqResponseTableName}"
+      AttributeDefinitions: 
+        - {AttributeName: "correlation-id", AttributeType: "S"}
+        - {AttributeName: "unicorn-id",     AttributeType: "S"}
+      KeySchema: 
+        - {AttributeName: "correlation-id", KeyType: "HASH" }
+        - {AttributeName: "unicorn-id",     KeyType: "RANGE"}
+      ProvisionedThroughput: {ReadCapacityUnits: 5,  WriteCapacityUnits: 5}
+    # Tags provided externally by sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Messaging resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  RfqRequestTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Stage}-${Workload}-${RfqRequestTopicName}"
+      # Tags provided externally by sam deploy command.
+
+  RfqResponseQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Stage}-${Workload}-${RfqResponseQueueName}"
+      # Tags provided externally by sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # API management resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  RideBookingApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${Stage}-${Workload}-${Service}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+
+  RideBookingApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      AccessLogSetting:
+        DestinationArn: !GetAtt "RideBookingApiLogGroup.Arn"
+        Format: '{"requestTime":"$context.requestTime","requestId":"$context.requestId","httpMethod":"$context.httpMethod","path":"$context.path","resourcePath":"$context.resourcePath","status":$context.status,"responseLatency":$context.responseLatency}'
+      # Auth: ApiAuth
+      # BinaryMediaTypes: List
+      # CacheClusterEnabled: Boolean
+      # CacheClusterSize: String
+      # CanarySetting: CanarySetting
+      # Cors: String | CorsConfiguration
+      # DefinitionBody: String
+      # DefinitionUri: String | ApiDefinition
+      Description: "API for the Ride Booking Service"
+      # Domain: DomainConfiguration
+      # EndpointConfiguration: EndpointConfiguration
+      # GatewayResponses: Map
+      MethodSettings:
+          # This is the "Log full requests/responses data" check box in the management console.
+        - DataTraceEnabled: true
+          HttpMethod: "*"
+          LoggingLevel: "INFO"
+          MetricsEnabled: true
+          ResourcePath: "/*"
+      # MinimumCompressionSize: Integer
+      # Models: Map
+      Name: "Ride Booking Api"
+      # OpenApiVersion: String
+      StageName: !Ref "Stage"
+      # Tags provided externally by sam deploy command.
+      TracingEnabled: true
+      # Variables: Map
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # User API resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  SubmitRfqFunction:
+    Depends: [ "RfqRequestTable", "RfqRequestTopic" ]
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-${SubmitRfqFunctionName}"
+      CodeUri: "src/"
+      Handler: "api_user_submit_rfq.lambda_handler"
+      Environment:
+        Variables:
+          RFQ_REQUEST_TABLE_NAME: !Ref "RfqRequestTable"
+          RFQ_REQUEST_TOPIC_NAME: !GetAtt "RfqRequestTopic.TopicName"
+          RFQ_REQUEST_TOPIC_ARN:  !Ref "RfqRequestTopic"
+          RFQ_RESPONSE_QUEUE_NAME: !GetAtt "RfqResponseQueue.QueueName"
+          RFQ_RESPONSE_QUEUE_URL:  !Ref "RfqResponseQueue"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref "RfqRequestTable"
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt "RfqRequestTopic.TopicName"
+      Events:
+        SubmitRfqEvent:
+          Type: "Api"
+          Properties:
+            Path: "/api/user/submit-rfq"
+            Method: "POST"
+            RestApiId:
+              Ref: "RideBookingApi"
+
+  SubmitRfqFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SubmitRfqFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # ---
+
+  RetrieveRfqStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-${RetrieveRfqStatusFunctionName}"
+      CodeUri: "src/"
+      Handler: "api_user_retrieve_rfq_status.lambda_handler"
+      Environment:
+        Variables:
+          RFQ_REQUEST_TABLE_NAME: !Ref "RfqRequestTable"
+          RFQ_RESPONSE_TABLE_NAME: !Ref "RfqResponseTable"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqRequestTable"
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqResponseTable"
+      Events:
+        SubmitRequestEvent:
+          Type: "Api"
+          Properties:
+            Path: "/api/user/retrieve-rfq-status"
+            Method: "GET"
+            RestApiId:
+              Ref: "RideBookingApi"
+
+  RetrieveRfqStatusFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RetrieveRfqStatusFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # ---
+
+  RetrieveRfqResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-${RetrieveRfqResultFunctionName}"
+      CodeUri: "src/"
+      Handler: "api_user_retrieve_rfq_result.lambda_handler"
+      Environment:
+        Variables:
+          RFQ_REQUEST_TABLE_NAME: !Ref "RfqRequestTable"
+          RFQ_RESPONSE_TABLE_NAME: !Ref "RfqResponseTable"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqRequestTable"
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RfqResponseTable"
+      Events:
+        SubmitRequestEvent:
+          Type: "Api"
+          Properties:
+            Path: "/api/user/retrieve-rfq-result"
+            Method: "GET"
+            RestApiId:
+              Ref: "RideBookingApi"
+
+  RetrieveRfqResultFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RetrieveRfqResultFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Message processing resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  ProcessRfqResponseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-${ProcessRfqResponseFunctionName}"
+      CodeUri: "src/"
+      Handler: "process_rfq_response.lambda_handler"
+      Environment:
+        Variables:
+          RFQ_REQUEST_TABLE_NAME: !Ref "RfqRequestTable"
+          RFQ_RESPONSE_TABLE_NAME: !Ref "RfqResponseTable"
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt "RfqResponseQueue.QueueName"
+        - DynamoDBCrudPolicy:
+            TableName: !Ref "RfqResponseTable"
+      Events:
+        RfqResponseMessageEvent:
+          Type: "SQS"
+          Properties:
+            Queue: !GetAtt "RfqResponseQueue.Arn"
+            BatchSize: 10
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # SSM Parameters for shared resources in this workload.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  # Parameters for RfqRequestTopic.
+
+  SSMParameter4RfqRequestTopicArn:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: "String"
+      Name: !Sub "/${Stage}/${Workload}/sns/${RfqRequestTopicName}/arn"
+      Description: "ARN of the shared SNS topic for RFQ request notifications"
+      Value: !Ref "RfqRequestTopic"
+      # Tags provided externally by sam deploy command.
+
+  SSMParameter4RfqRequestTopicName:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/${RfqRequestTopicName}/name"
+      Description: "Name of the shared SNS topic for RFQ request notifications"
+      Value: !GetAtt "RfqRequestTopic.TopicName"
+      # Tags provided externally by sam deploy command.
+
+  # Parameters for RfqResponseQueue.
+  
+  SSMParameter4RfqResponseQueueUrl:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sqs/${RfqResponseQueueName}/url"
+      Description: "URL of the shared SQS queue for RFQ responses"
+      Value: !Ref "RfqResponseQueue"
+      # Tags provided externally by sam deploy command.
+
+  SSMParameter4RfqResponseQueueArn:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sqs/${RfqResponseQueueName}/arn"
+      Description: "ARN of the shared SQS queue for RFQ responses"
+      Value: !GetAtt "RfqResponseQueue.Arn"
+      # Tags provided externally by sam deploy command.
+
+  SSMParameter4RfqResponseQueueName:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sqs/${RfqResponseQueueName}/name"
+      Description: "ARN of the shared SQS queue for RFQ responses"
+      Value: !GetAtt "RfqResponseQueue.QueueName"
+      # Tags provided externally by sam deploy command.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Outputs:
+
+  # # Outputs for DynamoDB tables.
+  
+  # RfqRequestTableName:
+  #   Description: "Name of the RfqRequestTable"
+  #   Value: !Ref "RfqRequestTable"
+  # RfqRequestTableArn:
+  #   Description: "ARN of the RfqRequestTable"
+  #   Value: !GetAtt "RfqRequestTable.Arn"
+
+  # RfqResponseTableName:
+  #   Description: "Name of the RfqResponseTable"
+  #   Value: !Ref "RfqResponseTable"
+  # RfqResponseTableArn:
+  #   Description: "ARN of the RfqResponseTable"
+  #   Value: !GetAtt "RfqResponseTable.Arn"
+
+  # # Outputs for RfqRequestTopic.
+  
+  # RfqRequestTopicArn:
+  #   Description: "ARN of the RFQ request topic"
+  #   Value: !Ref "RfqRequestTopic"
+  # RfqRequestTopicName:
+  #   Description: "Name of the RFQ request topic"
+  #   Value: !GetAtt "RfqRequestTopic.TopicName"
+
+  # # Outputs for RfqResponseQueue.
+
+  # RfqResponseQueueUrl:
+  #   Value: !Ref "RfqResponseQueue"
+  #   Description: "URL of the SQS queue for RFQ responses"
+  # RfqResponseQueueArn:
+  #   Value: !GetAtt "RfqResponseQueue.Arn"
+  #   Description: "ARN of the SQS queue for RFQ responses"
+  # RfqResponseQueueName:
+  #   Value: !GetAtt "RfqResponseQueue.QueueName"
+  #   Description: "Name of the SQS queue for RFQ responses"
+
+  # Outputs for Lambda functions.
+  # --> skipped.
+
+  # Outputs for APIs.
+  RideBookingApiBaseUrl:
+    Description: "API Gateway base URL for the RideBookingApi"
+    Value: !Sub "https://${RideBookingApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+
+# ---------------------------------------------------------------------------------------------------------------------

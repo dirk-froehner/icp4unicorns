@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM Template for shared resources that have no specific service as their owner.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Description: "Environment stage (dev, test, ..., prod)"
+    Type: "String"
+    Default: "dev"
+  Workload:
+    Description: "Short name of the overall workload this service belongs to"
+    Type: "String"
+    Default: "wrbs"
+  Context:
+    Description: "Short name of the context for this service (e.g. backoffice services versus business services)"
+    Type: "String"
+    Default: "auxs"
+  Service:
+    Description: "Short name of this service"
+    Type: "String"
+    Default: "prep"
+  WorkloadLongName:
+    Description: "Long name of the overall workload this service belongs to"
+    Type: "String"
+    Default: "wild-rydes-backend-services"
+  ContextLongName:
+    Description: "Long name of the context for this service (e.g. backoffice services versus business services)"
+    Type: "String"
+    Default: "auxiliary-services"
+  ServiceLongName:
+    Description: "Long name of this service"
+    Type: "String"
+    Default: "application-preparation"
+  LogLevel:
+    Description: "Log level for Lambda functions"
+    Type: "String"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Description: "CloudWatch Logs retention period"
+    Type: "Number"
+    Default: 7
+
+  # Parameters specific to this service.
+
+  ApigwRequestEventsTopicName:
+    Description: "Name suffix (without prefixes for stage, workload) for the ApigwRequestEventsTopic"
+    Type: "String"
+    Default: "apigw-request-events"
+
+  SnsMessageEventsTopicName:
+    Description: "Name suffix (without prefixes for stage, workload) for the SnsMessageEventsTopic"
+    Type: "String"
+    Default: "sns-message-events"
+
+  SqsMessageEventsTopicName:
+    Description: "Name suffix (without prefixes for stage, workload) for the SqsMessageEventsTopicName"
+    Type: "String"
+    Default: "sqs-message-events"
+
+  DataLakeRawDataBucketName:
+    Description: "Name suffix (w/o prefixes for acct ID, region, stage, workload) for the raw data tier bucket"
+    Type: "String"
+    # Reducing the long name suffix to an abbreviation, otherwise we will likely exceed the max length of 63 chars.
+    #Default: "datalake-raw-data-bucket"
+    Default: "dl-raw-data"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Create an SNS topic that is used for general logging of Lambda events coming from API GW requests.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  ApigwRequestEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Stage}-${Workload}-${ApigwRequestEventsTopicName}"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4ApigwRequestEventsTopicArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/${ApigwRequestEventsTopicName}/arn"
+      Description: "ARN of the shared ApigwRequestEventsTopic"
+      Value: !Ref "ApigwRequestEventsTopic"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4ApigwRequestEventsTopicName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/${ApigwRequestEventsTopicName}/name"
+      Description: "Name of the shared ApigwRequestEventsTopic"
+      Value: !GetAtt "ApigwRequestEventsTopic.TopicName"
+      # Tags coming in from sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Create an SNS topic that is used for general logging of Lambda events coming from SNS topic messages.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  SnsMessageEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Stage}-${Workload}-${SnsMessageEventsTopicName}"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4SnsMessageEventsTopicArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/${SnsMessageEventsTopicName}/arn"
+      Description: "ARN of the shared SnsMessageEventsTopic"
+      Value: !Ref "SnsMessageEventsTopic"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4SnsMessageEventsTopicName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/${SnsMessageEventsTopicName}/name"
+      Description: "Name of the shared SnsMessageEventsTopic"
+      Value: !GetAtt "SnsMessageEventsTopic.TopicName"
+      # Tags coming in from sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Create an SNS topic that is used for general logging of Lambda events coming from SQS queue messages.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  SqsMessageEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Stage}-${Workload}-${SqsMessageEventsTopicName}"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4SqsMessageEventsTopicArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/${SqsMessageEventsTopicName}/arn"
+      Description: "ARN of the shared SqsMessageEventsTopic"
+      Value: !Ref "SqsMessageEventsTopic"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4SqsMessageEventsTopicName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/${SqsMessageEventsTopicName}/name"
+      Description: "Name of the shared SqsMessageEventsTopic"
+      Value: !GetAtt "SqsMessageEventsTopic.TopicName"
+      # Tags coming in from sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Create an S3 bucket that serves as data lake bucket for the raw data tier.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  DataLakeRawDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: "Delete"
+    Properties: 
+      BucketName: !Sub "${AWS::AccountId}-${AWS::Region}-${Stage}-${Workload}-${DataLakeRawDataBucketName}"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4DataLakeRawDataBucketName:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/s3/${DataLakeRawDataBucketName}/name"
+      Description: "Name of the shared DataLakeRawDataBucket"
+      Value: !Ref "DataLakeRawDataBucket"
+      # Tags coming in from sam deploy command.
+
+  SSMParameter4DataLakeRawDataBucketArn:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/s3/${DataLakeRawDataBucketName}/arn"
+      Description: "ARN of the shared DataLakeRawDataBucket"
+      Value: !GetAtt "DataLakeRawDataBucket.Arn"
+      # Tags coming in from sam deploy command.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------

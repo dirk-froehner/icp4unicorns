@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Wild Rydes Backends / Business Services / Customer Loyalty Service.
+  This service manages the loyalty klebs for Wild Rydes customers. It gets notified whenever a unicorn has successfully delivered a customer to a destination.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Short name of the overall workload this service belongs to"
+    Default: "wrbs"
+  Context:
+    Type: "String"
+    Description: "Short name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "busi"
+  Service:
+    Type: "String"
+    Description: "Short name of this service"
+    Default: "culo"
+  WorkloadLongName:
+    Type: "String"
+    Description: "Long name of the overall workload this service belongs to"
+    Default: "wild-rydes-backends"
+  ContextLongName:
+    Type: "String"
+    Description: "Long name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "business-services"
+  ServiceLongName:
+    Type: "String"
+    Description: "Long name of this service"
+    Default: "customer-loyalty-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Type: "Number"
+    Description: "CloudWatch Logs retention period"
+    Default: 7
+
+  # Standard parameters for business services.
+
+  PublishLambdaEvents:
+    Type: "Number"
+    Description: "Flag to state if Lambda events from business services must be pulished to the respective ops topic"
+    Default: 1
+
+  SnsMessageEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/arn"
+  SnsMessageEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/name"
+
+  # Parameters specific to this service.
+
+  RideCompletionTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SNS topic for ride completion notifications"
+    Default: "/dev/wrbs/sns/ride-completion-topic/arn"
+  RideCompletionTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SNS topic for ride completion notifications"
+    Default: "/dev/wrbs/sns/ride-completion-topic/name"
+
+  CompletedRidesTableName:
+    Description: "Name suffix for the table that stores completed rides"
+    Type: "String"
+    Default: "completed-rides"
+
+  LoyaltyKlebsTableName:
+    Description: "Name suffix for the table that stores loyalty klebs"
+    Type: "String"
+    Default: "loyalty-klebs"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+
+  # Globals for serverless functions.
+
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Environment:
+      Variables:
+        STAGE:                 !Ref "Stage"
+        WORKLOAD:              !Ref "Workload"
+        CONTEXT:               !Ref "Context"
+        SERVICE:               !Ref "Service"
+        WORKLOAD_LONG_NAME:    !Ref "WorkloadLongName"
+        CONTEXT_LONG_NAME:     !Ref "ContextLongName"
+        SERVICE_LONG_NAME:     !Ref "ServiceLongName"
+        LOG_LEVEL:             !Ref "LogLevel"
+        PUBLISH_LAMBDA_EVENTS: !Ref "PublishLambdaEvents"
+        MSG_META_CORRELATION_ID_KEY: "icp.correlation-id"
+        MSG_META_RETURN_ADDRESS_KEY: "icp.return-address"
+    # Tags provided externally by sam deploy command.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Persistence resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  CompletedRidesTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub "${Stage}-${Workload}-${Service}-${CompletedRidesTableName}"
+      AttributeDefinitions: 
+        - {AttributeName: "customer-id",  AttributeType: "S"}
+        - {AttributeName: "submitted-at", AttributeType: "S"}
+      KeySchema: 
+        - {AttributeName: "customer-id",  KeyType: "HASH" }
+        - {AttributeName: "submitted-at", KeyType: "RANGE"}
+      ProvisionedThroughput: {ReadCapacityUnits: 5,  WriteCapacityUnits: 5}
+    # Tags provided externally by sam deploy command.
+
+  LoyaltyKlebsTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub "${Stage}-${Workload}-${Service}-${LoyaltyKlebsTableName}"
+      AttributeDefinitions: 
+        - {AttributeName: "customer-id",  AttributeType: "S"}
+      KeySchema: 
+        - {AttributeName: "customer-id",  KeyType: "HASH" }
+      ProvisionedThroughput: {ReadCapacityUnits: 5,  WriteCapacityUnits: 5}
+    # Tags provided externally by sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Lambda function + log group for processing ride completion notification messages.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  ProcessRideCompletionNotificationFunction:
+    Depends: "CompletedRidesTable"
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-process-ride-completion"
+      CodeUri: "src/"
+      Handler: "process_ride_completion_notification.lambda_handler"
+      Environment:
+        Variables:
+          SNS_MESSAGE_EVENT_TOPIC_NAME: !Ref "SnsMessageEventTopicName"
+          SNS_MESSAGE_EVENT_TOPIC_ARN:  !Ref "SnsMessageEventTopicArn"
+          RIDES_STORE_TABLE_NAME:       !Ref "CompletedRidesTable"
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref "SnsMessageEventTopicName"
+        - DynamoDBCrudPolicy:
+            TableName: !Ref "CompletedRidesTable"
+      Events:
+        RideCompletionNotificationEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref "RideCompletionTopicArn"
+
+  ProcessRideCompletionNotificationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProcessRideCompletionNotificationFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Outputs:
+
+  # Outputs for RidesStore.
+  
+  RidesStoreTableName:
+    Description: "Name of the rides store table"
+    Value: !Ref "CompletedRidesTable"
+  RidesStoreTableArn:
+    Description: "ARN of the rides store table"
+    Value: !GetAtt "CompletedRidesTable.Arn"
+
+  # Outputs for Lambda functions.
+  
+  ProcessRideCompletionNotificationFunctionArn:
+    Description: "ARN of the ProcessRideCompletionNotificationFunction"
+    Value: !GetAtt "ProcessRideCompletionNotificationFunction.Arn"
+  ProcessRideCompletionNotificationFunctionRoleArn:
+    Description: "ARN of the IAM role implicitly created for the ProcessRideCompletionNotificationFunctionRole"
+    Value: !GetAtt "ProcessRideCompletionNotificationFunctionRole.Arn"
+
+# ---------------------------------------------------------------------------------------------------------------------

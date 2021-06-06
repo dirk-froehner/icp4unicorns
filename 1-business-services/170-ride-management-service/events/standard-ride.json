@@ -1,0 +1,9 @@
+{
+    "unicorn-id": "Shadowfax",
+    "ride-id": "ABCD-4711",
+    "customer-id": "WXYZ-0815",
+    "fare": 61.59,
+    "distance": 344.78,
+    "from": "NYC",
+    "to": "BOS"
+}

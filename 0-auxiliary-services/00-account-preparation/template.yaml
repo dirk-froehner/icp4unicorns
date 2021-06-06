@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM Template for common settings that need to be run first in a fresh account.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Description: "Environment stage (dev, test, ..., prod)"
+    Type: "String"
+    Default: "dev"
+  Workload:
+    Description: "Short name of the overall workload this service belongs to"
+    Type: "String"
+    Default: "wrbs"
+  Context:
+    Description: "Short name of the context for this service (e.g. backoffice services versus business services)"
+    Type: "String"
+    Default: "auxs"
+  Service:
+    Description: "Short name of this service"
+    Type: "String"
+    Default: "acct"
+  WorkloadLongName:
+    Description: "Long name of the overall workload this service belongs to"
+    Type: "String"
+    Default: "wild-rydes-backend-services"
+  ContextLongName:
+    Description: "Long name of the context for this service (e.g. backoffice services versus business services)"
+    Type: "String"
+    Default: "auxiliary-services"
+  ServiceLongName:
+    Description: "Long name of this service"
+    Type: "String"
+    Default: "account-preparation"
+  LogLevel:
+    Description: "Log level for Lambda functions"
+    Type: "String"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Description: "CloudWatch Logs retention period"
+    Type: "Number"
+    Default: 7
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # One-off activity for a fresh account in order to fundamentally allow for CW Logs acess from API GW.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigateway-account.html
+  ApiGatewayRoleForCloudWatchLogging:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "ApiGatewayRoleForCloudWatchLogging"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+      # Not sure yet how meaningful those tags are for the account preparation resources.
+      # Tags coming in from sam deploy command.
+
+  DummyApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties: 
+      # CustomerId: String
+      Description: "Dummy API key as senseless dependency to allow for API GW request logging in fresh AWS accounts"
+      Enabled: false
+      # GenerateDistinctId: Boolean
+      Name: "IGNORE_THIS_KEY"
+      # StageKeys: 
+      #   - StageKey
+      Value: "API Key value should be at least 20 characters"
+      # Not sure yet how meaningful those tags are for the account preparation resources.
+      # Tags coming in from sam deploy command.
+
+  # Check the documentation regarding a necessary dependency on another API GW resource:
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigateway-account.html
+  # Important: If an API Gateway resource has never been created in your AWS account, you must add a dependency
+  # on another API Gateway resource, such as an AWS::ApiGateway::RestApi or AWS::ApiGateway::ApiKey resource. 
+  ApiGatewayAccountForCloudWatchLogging:
+    DependsOn: "DummyApiKey"
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt "ApiGatewayRoleForCloudWatchLogging.Arn"
+      # This resource doesn't support tagging.
+
+# ---------------------------------------------------------------------------------------------------------------------

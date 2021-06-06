@@ -1,0 +1,313 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+    Wild Rydes Backends / Business Services / Ride Management Service.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Short name of the overall workload this service belongs to"
+    Default: "wrbs"
+  Context:
+    Type: "String"
+    Description: "Short name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "busi"
+  Service:
+    Type: "String"
+    Description: "Short name of this service"
+    Default: "rima"
+  WorkloadLongName:
+    Type: "String"
+    Description: "Long name of the overall workload this service belongs to"
+    Default: "wild-rydes-backends"
+  ContextLongName:
+    Type: "String"
+    Description: "Long name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "business-services"
+  ServiceLongName:
+    Type: "String"
+    Description: "Long name of this service"
+    Default: "ride-management-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Type: "Number"
+    Description: "CloudWatch Logs retention period"
+    Default: 7
+
+  # Standard parameters for business services.
+
+  PublishLambdaEvents:
+    Type: "Number"
+    Description: "Flag to state if Lambda events from business services must be pulished to the respective ops topic"
+    Default: 1
+
+  # Parameters from AWS SSM Parameter Store for shared resources.
+
+  ApigwRequestEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/arn"
+  ApigwRequestEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/name"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+
+  # Globals for serverless functions.
+
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Environment:
+      Variables:
+        STAGE:                 !Ref "Stage"
+        WORKLOAD:              !Ref "Workload"
+        CONTEXT:               !Ref "Context"
+        SERVICE:               !Ref "Service"
+        WORKLOAD_LONG_NAME:    !Ref "WorkloadLongName"
+        CONTEXT_LONG_NAME:     !Ref "ContextLongName"
+        SERVICE_LONG_NAME:     !Ref "ServiceLongName"
+        LOG_LEVEL:             !Ref "LogLevel"
+        PUBLISH_LAMBDA_EVENTS: !Ref "PublishLambdaEvents"
+    # Tags provided externally by sam deploy command.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Persistence resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  RidesStoreTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-${Workload}-${Service}-rides"
+      AttributeDefinitions: 
+        - AttributeName: "customer-id"
+          AttributeType: "S"
+        - AttributeName: "submitted-at"
+          AttributeType: "S"
+      KeySchema: 
+        - AttributeName: "customer-id"
+          KeyType: "HASH"
+        - AttributeName: "submitted-at"
+          KeyType: "RANGE"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      # Tags provided externally by sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Messaging resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  RideCompletionTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Stage}-${Workload}-ride-completion"
+      # Tags provided externally by sam deploy command.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # API management resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  RideManagementApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${Stage}-${Workload}-${Service}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+
+  RideManagementApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      AccessLogSetting:
+        DestinationArn: !GetAtt "RideManagementApiLogGroup.Arn"
+        Format: '{"requestTime":"$context.requestTime","requestId":"$context.requestId","httpMethod":"$context.httpMethod","path":"$context.path","resourcePath":"$context.resourcePath","status":$context.status,"responseLatency":$context.responseLatency}'
+      Description: "API for the Ride Management Service"
+      MethodSettings:
+          # This is the "Log full requests/responses data" check box in the management console.
+        - DataTraceEnabled: true
+          HttpMethod: "*"
+          LoggingLevel: "INFO"
+          MetricsEnabled: true
+          ResourcePath: "/*"
+      Name: "Ride Management Api"
+      StageName: !Ref "Stage"
+      # Tags provided externally by sam deploy command.
+      TracingEnabled: true
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # User API resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  SubmitRideCompletionFunction:
+    Depends: [ "RidesStoreTable", "RideCompletionTopic" ]
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-submit-ride-completion"
+      CodeUri: "src/"
+      Handler: "submit_ride_completion.lambda_handler"
+      Environment:
+        Variables:
+          RIDES_STORE_TABLE_NAME:  !Ref "RidesStoreTable"
+          APIGW_REQUEST_EVENT_TOPIC_NAME: !Ref "ApigwRequestEventTopicName"
+          APIGW_REQUEST_EVENT_TOPIC_ARN: !Ref "ApigwRequestEventTopicArn"
+          RIDE_COMPLETION_TOPIC_NAME: !GetAtt "RideCompletionTopic.TopicName"
+          RIDE_COMPLETION_TOPIC_ARN: !Ref "RideCompletionTopic"
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref "ApigwRequestEventTopicName"
+        - CloudWatchPutMetricPolicy: {}
+        - DynamoDBCrudPolicy:
+            TableName: !Ref "RidesStoreTable"
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt "RideCompletionTopic.TopicName"
+      Events:
+        SubmitRequestEvent:
+          Type: Api
+          Properties:
+            Path: "/api/user/submit-ride-completion"
+            Method: "POST"
+            RestApiId:
+              Ref: "RideManagementApi"
+
+  SubmitRideCompletionFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SubmitRideCompletionFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  RetrieveCompletedRideFunction:
+    Depends: "RidesStoreTable"
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-retrieve-completed-ride"
+      CodeUri: "src/"
+      Handler: "retrieve_completed_ride.lambda_handler"
+      Environment:
+        Variables:
+          RIDES_STORE_TABLE_NAME:  !Ref "RidesStoreTable"
+          APIGW_REQUEST_EVENT_TOPIC_NAME: !Ref "ApigwRequestEventTopicName"
+          APIGW_REQUEST_EVENT_TOPIC_ARN: !Ref "ApigwRequestEventTopicArn"
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref "ApigwRequestEventTopicName"
+        - CloudWatchPutMetricPolicy: {}
+        - DynamoDBReadPolicy:
+            TableName: !Ref "RidesStoreTable"
+      Events:
+        SubmitRequestEvent:
+          Type: Api
+          Properties:
+            Path: "/api/user/retrieve-completed-ride"
+            Method: get
+            RestApiId:
+              Ref: "RideManagementApi"
+
+  RetrieveCompletedRideFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RetrieveCompletedRideFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # SSM Parameters for shared resources in this workload.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  # Parameters for the ride completion topic.
+
+  SSMParameter4RideCompletionTopicArn:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/ride-completion-topic/arn"
+      Description: "ARN of the shared SNS topic for ride completion notifications"
+      Value: !Ref "RideCompletionTopic"
+      # Tags provided externally by sam deploy command.
+
+  SSMParameter4RideCompletionTopicName:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Type: String
+      Name: !Sub "/${Stage}/${Workload}/sns/ride-completion-topic/name"
+      Description: "Name of the shared SNS topic for ride completion notifications"
+      Value: !GetAtt "RideCompletionTopic.TopicName"
+      # Tags provided externally by sam deploy command.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Outputs:
+
+  # Outputs for RidesStore.
+  
+  RidesStoreTableName:
+    Description: "Name of the rides store table"
+    Value: !Ref "RidesStoreTable"
+  RidesStoreTableArn:
+    Description: "ARN of the rides store table"
+    Value: !GetAtt "RidesStoreTable.Arn"
+
+  # Outputs for RideCompletionTopic.
+  
+  RideCompletionTopicArn:
+    Description: "ARN of the ride completion notification topic"
+    Value: !Ref "RideCompletionTopic"
+  RideCompletionTopicName:
+    Description: "Name of the ride completion notification topic"
+    Value: !GetAtt "RideCompletionTopic.TopicName"
+    
+  # Outputs for Lambda functions.
+  
+  SubmitRideCompletionFunctionArn:
+    Description: "ARN of the SubmitRideCompletionFunction"
+    Value: !GetAtt "SubmitRideCompletionFunction.Arn"
+  SubmitRideCompletionFunctionRoleArn:
+    Description: "ARN of the IAM role implicitly created for the SubmitRideCompletionFunction"
+    Value: !GetAtt "SubmitRideCompletionFunctionRole.Arn"
+
+  RetrieveCompletedRideFunctionArn:
+    Description: "ARN of the RetrieveCompletedRideFunction"
+    Value: !GetAtt "SubmitRideCompletionFunction.Arn"
+  RetrieveCompletedRideFunctionRoleArn:
+    Description: "ARN of the IAM role implicitly created for the RetrieveCompletedRideFunction"
+    Value: !GetAtt "SubmitRideCompletionFunctionRole.Arn"
+
+  # Outputs for APIs.
+  
+  RideManagementApiBaseUrl:
+    Description: "API Gateway base URL for the RideManagementApi"
+    Value: !Sub "https://${RideManagementApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+
+# ---------------------------------------------------------------------------------------------------------------------

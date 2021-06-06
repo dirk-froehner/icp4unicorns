@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Wild Rydes Backends / Business Services / Unicorn Management Service.
+  This service manages unicorns and particularly allows them to participate in RFQs from customers.
+  Under development.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Short name of the overall workload this service belongs to"
+    Default: "wrbs"
+  Context:
+    Type: "String"
+    Description: "Short name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "busi"
+  Service:
+    Type: "String"
+    Description: "Short name of this service"
+    Default: "unma"
+  WorkloadLongName:
+    Type: "String"
+    Description: "Long name of the overall workload this service belongs to"
+    Default: "wild-rydes-backends"
+  ContextLongName:
+    Type: "String"
+    Description: "Long name of the context for this service (e.g. backoffice services versus business services)"
+    Default: "business-services"
+  ServiceLongName:
+    Type: "String"
+    Description: "Long name of this service"
+    Default: "unicorn-management-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Type: "Number"
+    Description: "CloudWatch Logs retention period"
+    Default: 7
+
+  # Standard parameters for business services.
+
+  PublishLambdaEvents:
+    Type: "Number"
+    Description: "Flag to state if Lambda events from business services must be pulished to the respective ops topic"
+    Default: 1
+
+  SnsMessageEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/arn"
+  SnsMessageEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/name"
+
+  # Parameters specific to this service.
+
+  RfqRequestTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SNS topic for RFQ requests"
+    Default: "/dev/wrbs/sns/rfq-requests/arn"
+  RfqRequestTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SNS topic for RFQ requests"
+    Default: "/dev/wrbs/sns/rfq-requests/name"
+
+  ProcessRfqRequestShadowfaxFunctionName:
+    Description: "Name suffix for the function that processes RFQs for Shadowfax"
+    Type: "String"
+    Default: "process-rfq-request-shadowfax"
+
+  ProcessRfqRequestRocinanteFunctionName:
+    Description: "Name suffix for the function that processes RFQs for Rocinante"
+    Type: "String"
+    Default: "process-rfq-request-rocinante"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Globals:
+
+  # Globals for serverless functions.
+
+  Function:
+    Runtime: "python3.8"
+    Timeout: 5
+    Tracing: "Active"
+    MemorySize: 512
+    Environment:
+      Variables:
+        STAGE:                 !Ref "Stage"
+        WORKLOAD:              !Ref "Workload"
+        CONTEXT:               !Ref "Context"
+        SERVICE:               !Ref "Service"
+        WORKLOAD_LONG_NAME:    !Ref "WorkloadLongName"
+        CONTEXT_LONG_NAME:     !Ref "ContextLongName"
+        SERVICE_LONG_NAME:     !Ref "ServiceLongName"
+        LOG_LEVEL:             !Ref "LogLevel"
+        PUBLISH_LAMBDA_EVENTS: !Ref "PublishLambdaEvents"
+
+        SNS_MESSAGE_EVENT_TOPIC_NAME: !Ref "SnsMessageEventTopicName"
+        SNS_MESSAGE_EVENT_TOPIC_ARN:  !Ref "SnsMessageEventTopicArn"
+        MSG_META_CORRELATION_ID_KEY: "icp.correlation-id"
+        MSG_META_RETURN_ADDRESS_KEY: "icp.return-address"
+    # Tags provided externally by sam deploy command.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Processing resources.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  ProcessRfqRequestShadowfaxFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-${ProcessRfqRequestShadowfaxFunctionName}"
+      CodeUri: "src/"
+      Handler: "process_rfq_request.lambda_handler"
+      Environment:
+        Variables:
+          UNICORN_ID: "Shadowfax"
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref "SnsMessageEventTopicName"
+        - SQSSendMessagePolicy:
+            QueueName: !Sub "${Stage}-${Workload}-*"
+      Events:
+        RideCompletionNotificationEvent:
+          Type: "SNS"
+          Properties:
+            Topic: !Ref "RfqRequestTopicArn"
+
+  ProcessRfqRequestShadowfaxFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProcessRfqRequestShadowfaxFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # ---
+
+  ProcessRfqRequestRocinanteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-${Workload}-${Service}-${ProcessRfqRequestRocinanteFunctionName}"
+      CodeUri: "src/"
+      Handler: "process_rfq_request.lambda_handler"
+      Environment:
+        Variables:
+          UNICORN_ID: "Rocinante"
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref "SnsMessageEventTopicName"
+        - SQSSendMessagePolicy:
+            QueueName: !Sub "${Stage}-${Workload}-*"
+      Events:
+        RideCompletionNotificationEvent:
+          Type: "SNS"
+          Properties:
+            Topic: !Ref "RfqRequestTopicArn"
+
+  ProcessRfqRequestRocinanteFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProcessRfqRequestRocinanteFunction}"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+#Outputs:
+
+# --> Skipped!
+
+# ---------------------------------------------------------------------------------------------------------------------

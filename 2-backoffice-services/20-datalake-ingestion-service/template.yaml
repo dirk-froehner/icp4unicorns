@@ -1,0 +1,256 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Wild Rydes Backends / Backoffice Services / Datalake Ingestion Service.
+  This service chains SNS topics for Lambda events from Business Services with Kinesis Firehose delivery streams in order to ingest those Lambda events into the raw data tier of a data lake.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Parameters:
+
+  # Standard parameters that should go into every service.
+
+  Stage:
+    Type: "String"
+    Description: "Environment stage (dev, test, ..., prod)"
+    Default: "dev"
+  Workload:
+    Type: "String"
+    Description: "Short name of the overall workload this service belongs to"
+    Default: "wrbs"
+  Context:
+    Type: "String"
+    Description: "Short name of the context for this service (e.g. backoffice services versus businss services)"
+    Default: "boff"
+  Service:
+    Type: "String"
+    Description: "Short name of this service"
+    Default: "dlin"
+  WorkloadLongName:
+    Type: "String"
+    Description: "Long name of the overall workload this service belongs to"
+    Default: "wild-rydes-backends"
+  ContextLongName:
+    Type: "String"
+    Description: "Long name of the context for this service (e.g. backoffice services versus businss services)"
+    Default: "backoffice-services"
+  ServiceLongName:
+    Type: "String"
+    Description: "Long name of this service"
+    Default: "datalake-ingestion-service"
+  LogLevel:
+    Type: "String"
+    Description: "Log level for Lambda functions"
+    Default: "DEBUG"
+  LogRetentionInDays:
+    Type: "Number"
+    Description: "CloudWatch Logs retention period"
+    Default: 7
+
+  # Parameters from AWS SSM Parameter Store for shared resources.
+
+  ApigwRequestEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/arn"
+  ApigwRequestEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared ApigwRequestEventTopic"
+    Default: "/dev/wrbs/sns/apigw-request-events/name"
+
+  SnsMessageEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/arn"
+  SnsMessageEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SnsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sns-message-events/name"
+
+  SqsMessageEventTopicArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared SqsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sqs-message-events/arn"
+  SqsMessageEventTopicName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared SqsMessageEventTopic"
+    Default: "/dev/wrbs/sns/sqs-message-events/name"
+
+  DataLakeRawDataBucketArn:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "ARN of the shared DataLakeRawDataBucket"
+    Default: "/dev/wrbs/s3/dl-raw-data/arn"
+  DataLakeRawDataBucketName:
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Description: "Name of the shared DataLakeRawDataBucket"
+    Default: "/dev/wrbs/s3/dl-raw-data/name"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Mappings.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Globals.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Resources.
+# ---------------------------------------------------------------------------------------------------------------------
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Kinesis Firehose delivery stream to listen to SNS topics and transfer incoming events to the data lake raw tier.
+  # -------------------------------------------------------------------------------------------------------------------
+
+  # Log group for the delivery stream that is referred to in the CloudWatchLoggingOptions of the stream definition.
+  LambdaEventIngestionStreamLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/kinesisfirehose/${Stage}-${Workload}-${Service}-LambdaEventIngestionStream"
+      RetentionInDays: !Ref "LogRetentionInDays"
+      # Tags are not supported for AWS::Logs::LogGroup.
+
+  # Definition of a role (that is empty for the moment) that can be assumed by Firehose resources.
+  # Directly below, a policy is created that is added to this role.
+  # That policy will allow the delivery stream to write data to the datalake ingestion S3 bucket.
+  LambdaEventIngestionStreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Statement IDs are not required and they cannot contain dashes.
+          # - Sid: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStreamRoleStatement"
+            Effect: "Allow"
+            Principal:
+              # Only Firehose resources can assume this role.
+              Service: "firehose.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: "Role for the LambdaEventIngestionStream"
+      RoleName: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStreamRole"
+      Tags:
+        - {Key: "Stage",            Value: !Ref "Stage"           }
+        - {Key: "Workload",         Value: !Ref "Workload"        }
+        - {Key: "Context",          Value: !Ref "Context"         }
+        - {Key: "Service",          Value: !Ref "Service"         }
+        - {Key: "WorkloadLongName", Value: !Ref "WorkloadLongName"}
+        - {Key: "ContextLongName",  Value: !Ref "ContextLongName" }
+        - {Key: "ServiceLongName",  Value: !Ref "ServiceLongName" }
+
+  # This policy allows for all necessary operations on the raw data S3 bucket that Firehose needs to drop the data.
+  LambdaEventIngestionStreamRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStreamRolePolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Statement IDs are not required and they cannot contain dashes.
+          # - Sid: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStreamRolePolicyStatement"
+          - Effect: "Allow"
+            Action:
+              - "s3:AbortMultipartUpload"
+              - "s3:GetBucketLocation"
+              - "s3:GetObject"
+              - "s3:ListBucket"
+              - "s3:ListBucketMultipartUploads"
+              - "s3:PutObject"
+            Resource:
+              - !Ref "DataLakeRawDataBucketArn"
+              - !Sub "${DataLakeRawDataBucketArn}/*"
+      Roles:
+        - !Ref "LambdaEventIngestionStreamRole"
+      # Tags are not supported for AWS::IAM::Policy.
+
+  # This stream is going to subscribe to all SNS topics that provide with Lambda events from various event sources.
+  LambdaEventIngestionStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStream"
+      # DeliveryStreamType: String
+      S3DestinationConfiguration:
+        BucketARN: !Ref "DataLakeRawDataBucketArn"
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 1
+        # Why can't the service just use a log group with a name of convention like e.g. Lambda functions do?
+        # I would just want to enable logging, nothing else.
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref "LambdaEventIngestionStreamLogGroup"
+          # I wish I could just leave it to a log group name and the service auto-manages log streams per hour or day.
+          LogStreamName: "s3-delivery"
+        CompressionFormat: "UNCOMPRESSED"
+        # EncryptionConfiguration: 
+        #   EncryptionConfiguration
+        # See https://docs.aws.amazon.com/firehose/latest/dev/s3-prefixes.html
+        ErrorOutputPrefix: "${Stage}-${Workload}-${Service}-LambdaEventIngestionStream-ErrorOutput/result=!{firehose:error-output-type}/!{timestamp:yyyy/MM/dd}"
+        Prefix: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStream/"
+        # Attach the role that is defined below to this delivery stream.
+        RoleARN: !GetAtt "LambdaEventIngestionStreamRole.Arn"
+      Tags:
+        - {Key: "Stage",            Value: !Ref "Stage"           }
+        - {Key: "Workload",         Value: !Ref "Workload"        }
+        - {Key: "Context",          Value: !Ref "Context"         }
+        - {Key: "Service",          Value: !Ref "Service"         }
+        - {Key: "WorkloadLongName", Value: !Ref "WorkloadLongName"}
+        - {Key: "ContextLongName",  Value: !Ref "ContextLongName" }
+        - {Key: "ServiceLongName",  Value: !Ref "ServiceLongName" }
+
+  # Here the delivery stream subscribes to the SNS topic that serves all API GW request events.
+  LambdaEventIngestionStreamSnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref "ApigwRequestEventTopicArn"
+      Endpoint: !GetAtt "LambdaEventIngestionStream.Arn"
+      Protocol: "firehose"
+      SubscriptionRoleArn: !GetAtt "LambdaEventIngestionStreamSnsSubscriptionRole.Arn"
+      # Tags are not supported for AWS::SNS::Subscription.
+
+  # This role is attached to the SNS subscriptions for the delivery stream.
+  # It allows the SNS subscriptions to do what's needed to inject SNS messages into the delivery stream.
+  LambdaEventIngestionStreamSnsSubscriptionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStreamSnsSubscriptionRole"
+      Description: "Role with necessary policies for SNS to inject messages into the datalake ingestion delivery stream"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "sns.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: !Sub "${Stage}-${Workload}-${Service}-LambdaEventIngestionStreamSnsSubscriptionRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                - "firehose:DescribeDeliveryStream"
+                - "firehose:ListDeliveryStreams"
+                - "firehose:ListTagsForDeliveryStream"
+                - "firehose:PutRecord"
+                - "firehose:PutRecordBatch"
+                Effect: "Allow"
+                Resource:
+                  - !GetAtt "LambdaEventIngestionStream.Arn"
+      Tags:
+        - {Key: "Stage",            Value: !Ref "Stage"           }
+        - {Key: "Workload",         Value: !Ref "Workload"        }
+        - {Key: "Context",          Value: !Ref "Context"         }
+        - {Key: "Service",          Value: !Ref "Service"         }
+        - {Key: "WorkloadLongName", Value: !Ref "WorkloadLongName"}
+        - {Key: "ContextLongName",  Value: !Ref "ContextLongName" }
+        - {Key: "ServiceLongName",  Value: !Ref "ServiceLongName" }
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Outputs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------
