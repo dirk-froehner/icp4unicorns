@@ -47,11 +47,11 @@ aws s3 mb s3://111111111111-eu-central-1-sam-cli-source-bucket --profile burner1
 
 ### Sample requests for the "submit ride completion" use case:
 
-    cd submit-ride-completion/unicorn-management-service
+    cd <ride-management-service-dir>
     curl -i https://<your-api-gw-base-url>/api/user/submit-ride-completion -d @events/standard-ride.json
     curl -i https://<your-api-gw-base-url>/api/user/submit-ride-completion -d @events/extraordinary-ride.json
 
 ### Sample requests for the "instant ride RFQ" use case:
 
-    cd instant-ride-rfq/ride-booking-service
+    cd <ride-booking-service-dir>
     curl -i https://<your-api-gw-base-url>/api/user/submit-rfq -d @events/instant-ride-rfq.json
